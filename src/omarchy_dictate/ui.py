@@ -117,11 +117,6 @@ class FloatingPillWindow:
         # Container box
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         box.add_css_class("pill-container")
-        box.set_cursor_from_name("pointer")
-
-        click = Gtk.GestureClick()
-        click.connect("pressed", lambda gesture, n, x, y: self._trigger_stop())
-        box.add_controller(click)
 
         self._icon_label = Gtk.Label(label="󰍬")
         self._icon_label.add_css_class("pill-icon")
@@ -186,19 +181,25 @@ class FloatingPillWindow:
         return False
 
     def _on_key_pressed(self, controller, keyval, keycode, state) -> bool:
-        name = Gdk.keyval_name(keyval)
-        if name in ("Return", "KP_Enter", "ISO_Enter"):
+        name = Gdk.keyval_name(keyval) or ""
+        if (
+            keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_ISO_Enter)
+            or name in ("Return", "KP_Enter", "ISO_Enter")
+            or keycode in (36, 104)
+        ):
             self._trigger_stop()
             return True
-        elif name in ("Escape",):
+        elif keyval == Gdk.KEY_Escape or name in ("Escape", "Esc") or keycode == 9:
             self._trigger_cancel()
             return True
         return False
 
     def _trigger_stop(self) -> None:
+        self.set_polishing()
         if self.on_stop:
             self.on_stop()
 
     def _trigger_cancel(self) -> None:
+        self.close()
         if self.on_cancel:
             self.on_cancel()

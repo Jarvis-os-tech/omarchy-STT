@@ -152,17 +152,32 @@ class DictationSession:
         self._server: Optional[asyncio.Server] = None
         self._stop_event = asyncio.Event()
         self._cancelled = False
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     def _handle_signal(self) -> None:
         unbind_stop_keys()
-        self._stop_event.set()
+        if self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._stop_event.set)
+        else:
+            self._stop_event.set()
 
     def _handle_cancel_from_ui(self) -> None:
         self._cancelled = True
-        self._stop_event.set()
+        if self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._stop_event.set)
+        else:
+            self._stop_event.set()
+
+    def _handle_stop_from_ui(self) -> None:
+        if self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._stop_event.set)
+        else:
+            self._stop_event.set()
 
     async def run(self) -> None:
         """Run the dictation session until stopped via Enter or Super+H."""
+        self._loop = asyncio.get_running_loop()
+
         # Always clean any leftover stop binds before doing anything
         unbind_stop_keys()
         self.feedback.reset()
@@ -184,7 +199,7 @@ class DictationSession:
             # 4. Start Floating Pill overlay on screen with direct Enter & Esc capture
             try:
                 self.pill = FloatingPillWindow(
-                    on_stop=lambda: self._stop_event.set(),
+                    on_stop=self._handle_stop_from_ui,
                     on_cancel=self._handle_cancel_from_ui,
                 )
                 self.pill.start()
@@ -232,6 +247,11 @@ class DictationSession:
                 send_notification(f"✓ Transcribing ({provider_label})...", "Converting speech to text...")
                 await self._finish()
             else:
+                if self.transcriber:
+                    try:
+                        await self.transcriber.stop()
+                    except Exception:
+                        pass
                 send_notification("✕ Cancelled", "Voice dictation cancelled.")
 
         except Exception as e:
@@ -240,6 +260,11 @@ class DictationSession:
         finally:
             # Defensive restore of Hyprland keybinds, close pill, unmute voice agent
             unbind_stop_keys()
+            if self.transcriber:
+                try:
+                    await self.transcriber.stop()
+                except Exception:
+                    pass
             if self.pill:
                 try:
                     self.pill.close()
