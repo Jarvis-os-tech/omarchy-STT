@@ -54,8 +54,9 @@ window.dictate-pill {
 class FloatingPillWindow:
     """Floating live transcript pill that hovers above the active window without stealing focus."""
 
-    def __init__(self, on_close: Optional[callable] = None):
+    def __init__(self, on_close: Optional[callable] = None, on_click: Optional[callable] = None):
         self.on_close = on_close
+        self.on_click = on_click
         self._app: Optional[Gtk.Application] = None
         self._win: Optional[Gtk.ApplicationWindow] = None
         self._icon_label: Optional[Gtk.Label] = None
@@ -105,12 +106,18 @@ class FloatingPillWindow:
         # Container box
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         box.add_css_class("pill-container")
+        box.set_cursor_from_name("pointer")
+
+        if self.on_click:
+            click = Gtk.GestureClick()
+            click.connect("pressed", lambda gesture, n, x, y: self.on_click())
+            box.add_controller(click)
 
         self._icon_label = Gtk.Label(label="󰍬")
         self._icon_label.add_css_class("pill-icon")
         box.append(self._icon_label)
 
-        self._text_label = Gtk.Label(label="Listening...")
+        self._text_label = Gtk.Label(label="Listening... (Enter to finish, Esc to cancel)")
         self._text_label.add_css_class("pill-text")
         self._text_label.add_css_class("muted")
         # Max width & wrap with start-ellipsize so long speech (e.g. 10+ sentences) stays readable & compact
@@ -136,7 +143,7 @@ class FloatingPillWindow:
                 self._text_label.set_text(clean)
             else:
                 self._text_label.add_css_class("muted")
-                self._text_label.set_text("Listening...")
+                self._text_label.set_text("Listening... (Enter to finish, Esc to cancel)")
         return False
 
     def set_polishing(self) -> None:

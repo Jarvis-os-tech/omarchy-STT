@@ -105,9 +105,14 @@ def unmute_voice_agent() -> None:
 def bind_stop_keys() -> None:
     """Dynamically bind Return, KP_Enter, and Escape in Hyprland while dictating."""
     cmd = (
-        'pcall(hl.bind, "Return", hl.dsp.exec_cmd("linux-voice stop"), { description = "Stop voice dictation" }); '
-        'pcall(hl.bind, "KP_Enter", hl.dsp.exec_cmd("linux-voice stop"), { description = "Stop voice dictation" }); '
-        'pcall(hl.bind, "Escape", hl.dsp.exec_cmd("linux-voice cancel"), { description = "Cancel voice dictation" })'
+        'local keys = { "RETURN", "code:36", "KP_ENTER", "code:104", "Return", "KP_Enter" }; '
+        'for _, k in ipairs(keys) do '
+        '  pcall(o.bind, k, "Stop voice dictation", "linux-voice stop"); '
+        'end; '
+        'local esc_keys = { "ESCAPE", "code:9", "Escape" }; '
+        'for _, k in ipairs(esc_keys) do '
+        '  pcall(o.bind, k, "Cancel voice dictation", "linux-voice cancel"); '
+        'end'
     )
     try:
         subprocess.run(["hyprctl", "eval", cmd], capture_output=True, timeout=1.0)
@@ -118,10 +123,11 @@ def bind_stop_keys() -> None:
 def unbind_stop_keys() -> None:
     """Unconditionally restore Return, KP_Enter, and Escape in Hyprland."""
     cmd = (
-        'for i = 1, 3 do '
-        'pcall(hl.unbind, "Return"); '
-        'pcall(hl.unbind, "KP_Enter"); '
-        'pcall(hl.unbind, "Escape") '
+        'local keys = { "RETURN", "code:36", "KP_ENTER", "code:104", "Return", "KP_Enter", "ESCAPE", "code:9", "Escape" }; '
+        'for _, k in ipairs(keys) do '
+        '  for i = 1, 3 do '
+        '    pcall(hl.unbind, k); '
+        '  end '
         'end'
     )
     try:
@@ -168,23 +174,23 @@ class DictationSession:
             # 2. Start Control Socket Server for toggle/stop signaling
             await self._start_socket_server()
 
-            # 3. Start Live Streaming Transcriber and Microphone FIRST
+            # 3. IMMEDIATELY bind Return/Enter and Escape so keys respond with zero lag
+            bind_stop_keys()
+
+            # 4. Start Floating Pill overlay on screen
+            try:
+                self.pill = FloatingPillWindow(on_click=lambda: self._stop_event.set())
+                self.pill.start()
+            except Exception:
+                self.pill = None
+
+            # 5. Start Live Streaming Transcriber and Microphone
             self.transcriber = LiveTranscriber(
                 config=self.config,
                 on_text_update=None,
                 feedback=self.feedback,
             )
             await self.transcriber.start()
-
-            # 4. Start Floating Pill overlay on screen
-            try:
-                self.pill = FloatingPillWindow()
-                self.pill.start()
-            except Exception:
-                self.pill = None
-
-            # 5. ONLY bind Return/Enter and Escape now that recording is confirmed active
-            bind_stop_keys()
             play_sound("audio-volume-change")
             provider_label = "Groq" if self.config.provider == "groq" else "Gemini"
             send_notification(
