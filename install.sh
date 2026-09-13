@@ -16,6 +16,7 @@ echo "========================================="
 mkdir -p "$SHARE_DIR" "$BIN_DIR" "$CONFIG_DIR" "$PLUGIN_DIR" "$HOME/.config/linux-voice"
 
 # 2. Copy source and binary files
+rm -rf "$SHARE_DIR/src" "$SHARE_DIR/bin"
 cp -r "$SCRIPT_DIR/src" "$SCRIPT_DIR/bin" "$SHARE_DIR/"
 ln -sf "$SHARE_DIR" "$LEGACY_SHARE_DIR"
 
@@ -23,17 +24,6 @@ ln -sf "$SHARE_DIR" "$LEGACY_SHARE_DIR"
 ln -sf "$SHARE_DIR/bin/linux-voice" "$BIN_DIR/linux-voice"
 ln -sf "$SHARE_DIR/bin/omarchy-dictate" "$BIN_DIR/omarchy-dictate"
 chmod +x "$SHARE_DIR/bin/linux-voice" "$SHARE_DIR/bin/omarchy-dictate"
-
-# 4. Install Omarchy Quickshell plugins (Voice Flow Orb & Bar Indicator)
-if [ -d "$SCRIPT_DIR/plugin" ]; then
-  cp -r "$SCRIPT_DIR/plugin/"* "$PLUGIN_DIR/"
-fi
-
-# 5. Enable plugins in Omarchy
-if command -v omarchy >/dev/null 2>&1; then
-  omarchy plugin enable voice.orb 2>/dev/null || true
-  omarchy plugin enable voice.indicator 2>/dev/null || true
-fi
 
 # 6. Setup API Key configuration if not existing
 if [ ! -f "$CONFIG_DIR/env" ]; then

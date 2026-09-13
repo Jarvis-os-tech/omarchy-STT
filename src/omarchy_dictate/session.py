@@ -63,12 +63,51 @@ def play_sound(sound_name: str = "audio-volume-change") -> None:
         pass
 
 
+import socket
+from pathlib import Path
+
+from .ui import FloatingPillWindow
+
+
+def mute_voice_agent() -> bool:
+    """If omarchy-voice daemon is running, mute it so it won't listen/type during dictation."""
+    agent_sock = Path(f"/run/user/{os.getuid()}/omarchy-voice/control.sock")
+    if not agent_sock.exists():
+        return False
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(0.4)
+        s.connect(str(agent_sock))
+        s.sendall(b"mute\n")
+        s.recv(64)
+        s.close()
+        return True
+    except Exception:
+        return False
+
+
+def unmute_voice_agent() -> None:
+    """Restore omarchy-voice when dictation finishes."""
+    agent_sock = Path(f"/run/user/{os.getuid()}/omarchy-voice/control.sock")
+    if not agent_sock.exists():
+        return
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(0.4)
+        s.connect(str(agent_sock))
+        s.sendall(b"unmute\n")
+        s.recv(64)
+        s.close()
+    except Exception:
+        pass
+
+
 def bind_stop_keys() -> None:
     """Dynamically bind Return, KP_Enter, and Escape in Hyprland while dictating."""
     cmd = (
-        'pcall(hl.bind, "Return", hl.dsp.exec_cmd("omarchy-dictate stop"), { description = "Stop voice dictation" }); '
-        'pcall(hl.bind, "KP_Enter", hl.dsp.exec_cmd("omarchy-dictate stop"), { description = "Stop voice dictation" }); '
-        'pcall(hl.bind, "Escape", hl.dsp.exec_cmd("omarchy-dictate cancel"), { description = "Cancel voice dictation" })'
+        'pcall(hl.bind, "Return", hl.dsp.exec_cmd("linux-voice stop"), { description = "Stop voice dictation" }); '
+        'pcall(hl.bind, "KP_Enter", hl.dsp.exec_cmd("linux-voice stop"), { description = "Stop voice dictation" }); '
+        'pcall(hl.bind, "Escape", hl.dsp.exec_cmd("linux-voice cancel"), { description = "Cancel voice dictation" })'
     )
     try:
         subprocess.run(["hyprctl", "eval", cmd], capture_output=True, timeout=1.0)
@@ -101,6 +140,8 @@ class DictationSession:
     def __init__(self, config: Config):
         self.config = config
         self.feedback = Feedback()
+        self.pill: Optional[FloatingPillWindow] = None
+        self._muted_agent = False
         self.transcriber: Optional[LiveTranscriber] = None
         self._server: Optional[asyncio.Server] = None
         self._stop_event = asyncio.Event()
@@ -112,9 +153,12 @@ class DictationSession:
 
     async def run(self) -> None:
         """Run the dictation session until stopped via Enter or Super+H."""
-        # Always clean any leftover stop binds and reset voice orb before doing anything
+        # Always clean any leftover stop binds before doing anything
         unbind_stop_keys()
         self.feedback.reset()
+
+        # Mute omarchy-voice if running so it never listens or types while we dictate
+        self._muted_agent = mute_voice_agent()
 
         try:
             # 1. Write PID file
@@ -132,8 +176,12 @@ class DictationSession:
             )
             await self.transcriber.start()
 
-            # 4. Publish live listening state to VoiceOrb and VoiceIndicator
-            self.feedback.state("listening", "Listening...")
+            # 4. Start Floating Pill overlay on screen
+            try:
+                self.pill = FloatingPillWindow()
+                self.pill.start()
+            except Exception:
+                self.pill = None
 
             # 5. ONLY bind Return/Enter and Escape now that recording is confirmed active
             bind_stop_keys()
@@ -162,15 +210,9 @@ class DictationSession:
             unbind_stop_keys()
             play_sound("audio-volume-change")
 
-            # 9. Publish thinking state to VoiceOrb and VoiceIndicator
-            if not self._cancelled:
-                self.feedback.state("thinking", "Polishing...")
-                self.feedback.level(0.0)
-            else:
-                self.feedback.reset()
-
-            # Brief settle delay before typing
-            await asyncio.sleep(0.12)
+            # 9. Update visual pill to polishing state
+            if self.pill and not self._cancelled:
+                self.pill.set_polishing()
 
             # 10. Stop dictation, polish, and type text into the active text bar
             if not self._cancelled:
@@ -183,8 +225,17 @@ class DictationSession:
             send_notification("⚠️ Dictation Error", str(e))
             raise
         finally:
-            # Absolute defensive restore of Hyprland keybinds & feedback reset
+            # Defensive restore of Hyprland keybinds, close pill, unmute voice agent
             unbind_stop_keys()
+            if self.pill:
+                try:
+                    self.pill.close()
+                except Exception:
+                    pass
+                self.pill = None
+            if self._muted_agent:
+                unmute_voice_agent()
+                self._muted_agent = False
             self.feedback.reset()
             self._cleanup()
 
@@ -199,17 +250,29 @@ class DictationSession:
         if raw_transcript.strip():
             polished_text = await polish_text(raw_transcript, self.config)
 
-        # 1. Reset VoiceOrb so overlay vanishes and focus is 100% on the active window text bar
-        self.feedback.reset()
-        await asyncio.sleep(0.08)
+        # Close visual pill BEFORE typing so window focus is 100% active on the text bar!
+        if self.pill:
+            try:
+                self.pill.close()
+            except Exception:
+                pass
+            self.pill = None
 
-        # 2. Type directly into the active focused window / text bar
+        # Give Hyprland 150ms to ensure the window has full keyboard focus
+        await asyncio.sleep(0.15)
+
+        # Type directly into the active focused window / text bar
         if polished_text.strip():
             preview = polished_text[:40] + "..." if len(polished_text) > 40 else polished_text
             send_notification("✓ Dictated", preview, timeout_ms=2500)
             await type_text(polished_text)
         else:
-            send_notification("Omarchy Dictate", "No speech detected", timeout_ms=2000)
+            send_notification("Linux Voice", "No speech detected", timeout_ms=2000)
+
+        # Unmute voice agent as soon as typing completes
+        if self._muted_agent:
+            unmute_voice_agent()
+            self._muted_agent = False
 
     async def _start_socket_server(self) -> None:
         if SOCKET_FILE.exists():

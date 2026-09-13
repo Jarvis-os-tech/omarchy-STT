@@ -47,7 +47,7 @@ def get_audio_energy(pcm: bytes) -> float:
     return sum(abs(s) for s in samples) / len(samples)
 
 
-def has_audio_energy(pcm: bytes, threshold: float = 15.0) -> bool:
+def has_audio_energy(pcm: bytes, threshold: float = 2.0) -> bool:
     """Check if audio has detectable sound energy (to skip muted mic/silence)."""
     return get_audio_energy(pcm) >= threshold
 
@@ -115,7 +115,7 @@ class LiveTranscriber:
         await self.mic.stop()
 
         pcm_data = bytes(self._pcm_buffer)
-        if not pcm_data or len(pcm_data) < 1600 or not has_audio_energy(pcm_data, 15.0):
+        if not pcm_data or len(pcm_data) < 1600 or not has_audio_energy(pcm_data, 2.0):
             return ""
 
         energy = get_audio_energy(pcm_data)
@@ -135,7 +135,7 @@ class LiveTranscriber:
 
             # Suppress silence hallucinations on low-energy clips
             cleaned = text.strip()
-            if energy < 35.0 and cleaned.lower() in COMMON_SILENCE_HALLUCINATIONS:
+            if energy < 15.0 and cleaned.lower() in COMMON_SILENCE_HALLUCINATIONS:
                 cleaned = ""
 
             self.finalized_text = cleaned

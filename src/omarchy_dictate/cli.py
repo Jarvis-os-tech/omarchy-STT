@@ -114,7 +114,9 @@ def main() -> int:
     args = sys.argv[1:]
     command = args[0] if args else "toggle"
 
-    if command == "toggle":
+    if command in ("toggle", "start"):
+        if command == "start" and is_running():
+            return 0
         return cmd_toggle()
     elif command == "stop":
         return cmd_stop()
@@ -125,8 +127,9 @@ def main() -> int:
     elif command == "status":
         return cmd_status()
     elif command in ("-h", "--help", "help"):
-        print("Usage: omarchy-dictate [toggle|stop|cancel|unbind|status]")
+        print("Usage: linux-voice [toggle|start|stop|cancel|unbind|status]")
         print("  toggle  Start dictation or stop & type active transcript (default)")
+        print("  start   Start dictation if not already running")
         print("  stop    Stop active dictation session and type text")
         print("  cancel  Cancel active session without typing")
         print("  unbind  Force restore Enter and Escape keys")

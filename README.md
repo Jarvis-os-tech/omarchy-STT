@@ -7,8 +7,8 @@ A real-time, low-latency voice dictation system for Linux and Hyprland / Wayland
 - **Blazing Fast Transcription**: Powered by Groq's `whisper-large-v3-turbo` with sub-second turnaround, with full fallback support for Google Gemini.
 - **Smart Text Polisher**: Automatically formats punctuation, capitalization, and paragraph flow, strips hesitation filler words (`um`, `uh`, `like`), and preserves 100% of your multi-sentence dictation using Groq / Gemini LLMs.
 - **Press & Release Hotkey**: Press `SUPER + H` to start listening continuously.
-- **On-Screen Voice Flow Orb**: A glowing, breathing voice orb overlay at the bottom of the screen that visualizes your speech loudness in real-time.
-- **Top Bar Status**: Integrates with Omarchy's bar widget (`voice.indicator`) showing live microphone status.
+- **Dedicated Floating Pill Overlay**: A sleek Wayland GTK4 floating pill indicator displaying live status (`󰍬 Listening...`, `󱚟 Polishing...`) that never steals window focus and vanishes before typing.
+- **Full Voice Agent Isolation**: Automatically mutes any running voice assistant daemon (`omarchy-voice`) while dictating so they never conflict or cross-talk.
 - **Enter to Stop & Type**: Pressing `ENTER` stops listening, transcribes verbatim, polishes punctuation/formatting, and types directly into the focused application or text bar.
 - **Normal Enter Isolation**: When voice dictation is not active, the `ENTER` key is 100% untouched and operates normally for all applications.
 - **Escape to Cancel**: Press `ESCAPE` while listening to cancel without typing.

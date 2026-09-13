@@ -43,7 +43,7 @@ class Feedback:
 
     def __init__(self) -> None:
         uid = os.getuid()
-        self.state_dir = Path(f"/run/user/{uid}/omarchy-voice")
+        self.state_dir = Path(f"/run/user/{uid}/linux-voice")
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.state_file = self.state_dir / "state.json"
         self.level_file = self.state_dir / "level"
