@@ -104,6 +104,7 @@ class FloatingPillWindow:
 
         # Add key controller for immediate Enter and Escape handling
         key_ctrl = Gtk.EventControllerKey()
+        key_ctrl.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         key_ctrl.connect("key-pressed", self._on_key_pressed)
         self._win.add_controller(key_ctrl)
 
@@ -117,6 +118,7 @@ class FloatingPillWindow:
         # Container box
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         box.add_css_class("pill-container")
+        box.set_focusable(True)
 
         self._icon_label = Gtk.Label(label="󰍬")
         self._icon_label.add_css_class("pill-icon")
@@ -133,6 +135,8 @@ class FloatingPillWindow:
         box.append(self._text_label)
 
         self._win.set_child(box)
+        self._win.set_focusable(True)
+        self._win.set_focus(box)
         self._win.present()
         self._ready_event.set()
 
@@ -171,6 +175,10 @@ class FloatingPillWindow:
 
     def _do_close(self) -> bool:
         if self._win:
+            try:
+                self._win.set_visible(False)
+            except Exception:
+                pass
             self._win.close()
             self._win = None
         if self._app:

@@ -20,23 +20,8 @@ import atexit
 
 
 def send_notification(title: str, message: str, timeout_ms: int = 3000) -> None:
-    """Send a non-blocking desktop notification."""
-    try:
-        subprocess.Popen(
-            [
-                "notify-send",
-                "-a", "Omarchy Dictate",
-                "-t", str(timeout_ms),
-                "-u", "low",
-                "--",
-                title,
-                message,
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except Exception:
-        pass
+    """Desktop notifications are completely disabled per user request."""
+    return
 
 
 def play_sound(sound_name: str = "audio-volume-change") -> None:
@@ -104,15 +89,18 @@ def unmute_voice_agent() -> None:
 
 def bind_stop_keys() -> None:
     """Dynamically bind Return, KP_Enter, and Escape in Hyprland while dictating."""
+    bin_path = os.path.expanduser("~/.local/bin/linux-voice")
+    if not os.path.exists(bin_path):
+        bin_path = "linux-voice"
     cmd = (
         'local keys = { "RETURN", "code:36", "KP_ENTER", "code:104", "Return", "KP_Enter" }; '
-        'for _, k in ipairs(keys) do '
-        '  pcall(o.bind, k, "Stop voice dictation", "linux-voice stop"); '
-        'end; '
-        'local esc_keys = { "ESCAPE", "code:9", "Escape" }; '
-        'for _, k in ipairs(esc_keys) do '
-        '  pcall(o.bind, k, "Cancel voice dictation", "linux-voice cancel"); '
-        'end'
+        f'for _, k in ipairs(keys) do '
+        f'  pcall(o.bind, k, "Stop voice dictation", "{bin_path} stop"); '
+        f'end; '
+        f'local esc_keys = {{ "ESCAPE", "code:9", "Escape" }}; '
+        f'for _, k in ipairs(esc_keys) do '
+        f'  pcall(o.bind, k, "Cancel voice dictation", "{bin_path} cancel"); '
+        f'end'
     )
     try:
         subprocess.run(["hyprctl", "eval", cmd], capture_output=True, timeout=1.0)
@@ -163,12 +151,14 @@ class DictationSession:
 
     def _handle_cancel_from_ui(self) -> None:
         self._cancelled = True
+        unbind_stop_keys()
         if self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._stop_event.set)
         else:
             self._stop_event.set()
 
     def _handle_stop_from_ui(self) -> None:
+        unbind_stop_keys()
         if self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._stop_event.set)
         else:
@@ -214,11 +204,6 @@ class DictationSession:
             )
             await self.transcriber.start()
             play_sound("audio-volume-change")
-            provider_label = "Groq" if self.config.provider == "groq" else "Gemini"
-            send_notification(
-                f"🎙️ Voice Dictation Active ({provider_label})",
-                "Listening... Speak now.\nPress Enter to finish, or Super+H to stop.",
-            )
 
             # 6. Set up signal handlers to cleanly unbind and stop
             loop = asyncio.get_running_loop()
@@ -238,24 +223,28 @@ class DictationSession:
             unbind_stop_keys()
             play_sound("audio-volume-change")
 
-            # 9. Update visual pill to polishing state
+            # 9. Update visual pill to polishing state if finishing
             if self.pill and not self._cancelled:
                 self.pill.set_polishing()
 
             # 10. Stop dictation, polish, and type text into the active text bar
             if not self._cancelled:
-                send_notification(f"✓ Transcribing ({provider_label})...", "Converting speech to text...")
                 await self._finish()
             else:
+                if self.pill:
+                    try:
+                        self.pill.close()
+                    except Exception:
+                        pass
+                    self.pill = None
                 if self.transcriber:
                     try:
                         await self.transcriber.stop()
                     except Exception:
                         pass
-                send_notification("✕ Cancelled", "Voice dictation cancelled.")
 
         except Exception as e:
-            send_notification("⚠️ Dictation Error", str(e))
+            sys.stderr.write(f"Dictation error: {e}\n")
             raise
         finally:
             # Defensive restore of Hyprland keybinds, close pill, unmute voice agent
@@ -283,7 +272,7 @@ class DictationSession:
         if self.transcriber:
             raw_transcript = await self.transcriber.stop()
 
-        # Polish text via Gemini REST (fixes grammar, punctuation, preserves 10+ sentences)
+        # Polish text via Gemini/Groq (fixes grammar, punctuation, preserves 10+ sentences)
         polished_text = raw_transcript
         if raw_transcript.strip():
             polished_text = await polish_text(raw_transcript, self.config)
@@ -301,11 +290,7 @@ class DictationSession:
 
         # Type directly into the active focused window / text bar
         if polished_text.strip():
-            preview = polished_text[:40] + "..." if len(polished_text) > 40 else polished_text
-            send_notification("✓ Dictated", preview, timeout_ms=2500)
             await type_text(polished_text)
-        else:
-            send_notification("Linux Voice", "No speech detected", timeout_ms=2000)
 
         # Unmute voice agent as soon as typing completes
         if self._muted_agent:
