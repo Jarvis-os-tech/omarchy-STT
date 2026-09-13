@@ -37,10 +37,12 @@ fi
 
 # 6. Setup API Key configuration if not existing
 if [ ! -f "$CONFIG_DIR/env" ]; then
-  if [ -f "$SCRIPT_DIR/env.example" ]; then
+  if [ -f "$SCRIPT_DIR/.env" ]; then
+    cp "$SCRIPT_DIR/.env" "$CONFIG_DIR/env"
+  elif [ -f "$SCRIPT_DIR/env.example" ]; then
     cp "$SCRIPT_DIR/env.example" "$CONFIG_DIR/env"
   else
-    echo "GEMINI_API_KEY=" > "$CONFIG_DIR/env"
+    echo "GROQ_API_KEY=" > "$CONFIG_DIR/env"
   fi
   chmod 600 "$CONFIG_DIR/env"
 fi

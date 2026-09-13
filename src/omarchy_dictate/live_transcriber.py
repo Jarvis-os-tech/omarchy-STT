@@ -1,4 +1,4 @@
-"""High-accuracy Gemini audio speech transcriber."""
+"""High-accuracy, ultra-fast speech transcriber supporting Groq Whisper and Gemini."""
 
 from __future__ import annotations
 
@@ -9,12 +9,23 @@ import json
 import struct
 import urllib.request
 import urllib.error
+import uuid
 import wave
 from typing import Callable, Optional
 
 from .audio import Microphone
 from .config import Config
 from .feedback import Feedback, frame_level
+
+COMMON_SILENCE_HALLUCINATIONS = {
+    "thank you.",
+    "thank you",
+    "thanks for watching.",
+    "thanks for watching",
+    "you",
+    "bye.",
+    "subtitles by",
+}
 
 
 def pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 16000) -> bytes:
@@ -28,17 +39,21 @@ def pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 16000) -> bytes:
     return buf.getvalue()
 
 
-def has_audio_energy(pcm: bytes, threshold: float = 40.0) -> bool:
-    """Check if audio has detectable sound energy (to skip muted mic/silence)."""
+def get_audio_energy(pcm: bytes) -> float:
+    """Compute average absolute amplitude of PCM samples."""
     if len(pcm) < 2:
-        return False
+        return 0.0
     samples = struct.unpack(f"<{len(pcm)//2}h", pcm)
-    avg = sum(abs(s) for s in samples) / len(samples)
-    return avg >= threshold
+    return sum(abs(s) for s in samples) / len(samples)
+
+
+def has_audio_energy(pcm: bytes, threshold: float = 15.0) -> bool:
+    """Check if audio has detectable sound energy (to skip muted mic/silence)."""
+    return get_audio_energy(pcm) >= threshold
 
 
 class LiveTranscriber:
-    """Records microphone audio and transcribes via Gemini."""
+    """Records microphone audio and transcribes via Groq Whisper or Gemini."""
 
     def __init__(
         self,
@@ -61,7 +76,9 @@ class LiveTranscriber:
 
     async def start(self) -> None:
         if not self.config.api_key:
-            raise ValueError("GEMINI_API_KEY is not configured in ~/.config/omarchy-dictate/env")
+            raise ValueError(
+                "No API key configured. Please set GROQ_API_KEY or GEMINI_API_KEY in ~/.config/omarchy-dictate/env or .env"
+            )
 
         self._running = True
         self._pcm_buffer.clear()
@@ -83,7 +100,7 @@ class LiveTranscriber:
             pass
 
     async def stop(self) -> str:
-        """Stop mic, convert audio to WAV, and transcribe via Gemini."""
+        """Stop mic, convert audio to WAV, and transcribe."""
         self._running = False
         if self.feedback:
             self.feedback.level(0.0)
@@ -98,37 +115,106 @@ class LiveTranscriber:
         await self.mic.stop()
 
         pcm_data = bytes(self._pcm_buffer)
-        if not pcm_data or len(pcm_data) < 1600 or not has_audio_energy(pcm_data, 5.0):
+        if not pcm_data or len(pcm_data) < 1600 or not has_audio_energy(pcm_data, 15.0):
             return ""
 
-        # Package as WAV and send to Gemini
+        energy = get_audio_energy(pcm_data)
         wav_bytes = pcm_to_wav(pcm_data, self.config.sample_rate)
         loop = asyncio.get_running_loop()
+
+        text = ""
         try:
-            text = await loop.run_in_executor(
-                None,
-                self._call_gemini_transcribe,
-                wav_bytes,
-            )
-            self.finalized_text = text.strip()
+            if self.config.provider == "groq":
+                text = await loop.run_in_executor(None, self._call_groq_transcribe, wav_bytes)
+                if not text and self.config.gemini_api_key:
+                    text = await loop.run_in_executor(None, self._call_gemini_transcribe, wav_bytes)
+            else:
+                text = await loop.run_in_executor(None, self._call_gemini_transcribe, wav_bytes)
+                if not text and self.config.groq_api_key:
+                    text = await loop.run_in_executor(None, self._call_groq_transcribe, wav_bytes)
+
+            # Suppress silence hallucinations on low-energy clips
+            cleaned = text.strip()
+            if energy < 35.0 and cleaned.lower() in COMMON_SILENCE_HALLUCINATIONS:
+                cleaned = ""
+
+            self.finalized_text = cleaned
             if self.on_text_update and self.finalized_text:
                 self.on_text_update(self.finalized_text)
             return self.finalized_text
         except Exception:
             return ""
 
-    def _call_gemini_transcribe(self, wav_bytes: bytes) -> str:
-        b64 = base64.b64encode(wav_bytes).decode("ascii")
+    def _call_groq_transcribe(self, wav_bytes: bytes) -> str:
+        """Call Groq Whisper audio transcriptions API."""
+        key = self.config.groq_api_key or self.config.api_key
+        if not key:
+            return ""
 
-        # Models to try: gemini-flash-latest (fastest & robust), gemini-3.5-transcribe, gemini-3.6-flash
-        models = ["gemini-flash-latest", "gemini-3.5-transcribe", "gemini-3.6-flash"]
+        models = [self.config.live_model, "whisper-large-v3-turbo", "whisper-large-v3"]
+        seen = set()
+        models = [m for m in models if m and not (m in seen or seen.add(m))]
+
+        for model in models:
+            boundary = f"----WebKitFormBoundary{uuid.uuid4().hex}"
+            body = bytearray()
+
+            def add_field(name: str, val: str) -> None:
+                body.extend(f"--{boundary}\r\n".encode("utf-8"))
+                body.extend(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"))
+                body.extend(val.encode("utf-8"))
+                body.extend(b"\r\n")
+
+            add_field("model", model)
+            add_field("response_format", "json")
+            add_field("temperature", "0.0")
+
+            # WAV file section
+            body.extend(f"--{boundary}\r\n".encode("utf-8"))
+            body.extend(b'Content-Disposition: form-data; name="file"; filename="audio.wav"\r\n')
+            body.extend(b"Content-Type: audio/wav\r\n\r\n")
+            body.extend(wav_bytes)
+            body.extend(b"\r\n")
+            body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+
+            req = urllib.request.Request(
+                "https://api.groq.com/openai/v1/audio/transcriptions",
+                data=bytes(body),
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": f"multipart/form-data; boundary={boundary}",
+                    "User-Agent": "omarchy-dictate/1.0",
+                },
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=12) as resp:
+                    res = json.loads(resp.read().decode("utf-8"))
+                    text = res.get("text", "").strip()
+                    if text:
+                        return text
+            except Exception:
+                continue
+
+        return ""
+
+    def _call_gemini_transcribe(self, wav_bytes: bytes) -> str:
+        """Call Google Gemini generateContent with inline audio."""
+        key = self.config.gemini_api_key or self.config.api_key
+        if not key:
+            return ""
+
+        b64 = base64.b64encode(wav_bytes).decode("ascii")
+        models = [self.config.live_model, "gemini-flash-latest", "gemini-3.5-transcribe", "gemini-3.6-flash"]
+        seen = set()
+        models = [m for m in models if m and not (m in seen or seen.add(m))]
+
         prompt = (
             "You are a speech-to-text engine. Transcribe the spoken audio verbatim with proper punctuation "
             "and capitalization. Output ONLY the transcribed words and nothing else. If background noise or silence only, output nothing."
         )
 
         for model in models:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.config.api_key}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
             payload = {
                 "contents": [{
                     "parts": [
@@ -144,7 +230,10 @@ class LiveTranscriber:
             req = urllib.request.Request(
                 url,
                 data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"}
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "omarchy-dictate/1.0",
+                },
             )
             try:
                 with urllib.request.urlopen(req, timeout=12) as resp:

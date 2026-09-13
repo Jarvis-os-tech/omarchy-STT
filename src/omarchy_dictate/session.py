@@ -138,8 +138,9 @@ class DictationSession:
             # 5. ONLY bind Return/Enter and Escape now that recording is confirmed active
             bind_stop_keys()
             play_sound("audio-volume-change")
+            provider_label = "Groq" if self.config.provider == "groq" else "Gemini"
             send_notification(
-                "🎙️ Voice Dictation Active",
+                f"🎙️ Voice Dictation Active ({provider_label})",
                 "Listening... Speak now.\nPress Enter to finish, or Super+H to stop.",
             )
 
@@ -173,7 +174,7 @@ class DictationSession:
 
             # 10. Stop dictation, polish, and type text into the active text bar
             if not self._cancelled:
-                send_notification("✓ Transcribing...", "Converting speech to text...")
+                send_notification(f"✓ Transcribing ({provider_label})...", "Converting speech to text...")
                 await self._finish()
             else:
                 send_notification("✕ Cancelled", "Voice dictation cancelled.")
