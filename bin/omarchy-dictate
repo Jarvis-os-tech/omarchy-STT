@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Ensure GTK4 Layer Shell loads before libwayland
+export LD_PRELOAD="/usr/lib/libgtk4-layer-shell.so${LD_PRELOAD:+:$LD_PRELOAD}"
+
+# Resolve symlink to real directory
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+DIR="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+
+export PYTHONPATH="$DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+
+exec python3 -m omarchy_dictate.cli "$@"
