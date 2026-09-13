@@ -157,6 +157,10 @@ class DictationSession:
         unbind_stop_keys()
         self._stop_event.set()
 
+    def _handle_cancel_from_ui(self) -> None:
+        self._cancelled = True
+        self._stop_event.set()
+
     async def run(self) -> None:
         """Run the dictation session until stopped via Enter or Super+H."""
         # Always clean any leftover stop binds before doing anything
@@ -177,9 +181,12 @@ class DictationSession:
             # 3. IMMEDIATELY bind Return/Enter and Escape so keys respond with zero lag
             bind_stop_keys()
 
-            # 4. Start Floating Pill overlay on screen
+            # 4. Start Floating Pill overlay on screen with direct Enter & Esc capture
             try:
-                self.pill = FloatingPillWindow(on_click=lambda: self._stop_event.set())
+                self.pill = FloatingPillWindow(
+                    on_stop=lambda: self._stop_event.set(),
+                    on_cancel=self._handle_cancel_from_ui,
+                )
                 self.pill.start()
             except Exception:
                 self.pill = None

@@ -52,11 +52,17 @@ window.dictate-pill {
 
 
 class FloatingPillWindow:
-    """Floating live transcript pill that hovers above the active window without stealing focus."""
+    """Floating live transcript pill that hovers above the active window with direct Enter/Esc handling."""
 
-    def __init__(self, on_close: Optional[callable] = None, on_click: Optional[callable] = None):
+    def __init__(
+        self,
+        on_close: Optional[callable] = None,
+        on_stop: Optional[callable] = None,
+        on_cancel: Optional[callable] = None,
+    ):
         self.on_close = on_close
-        self.on_click = on_click
+        self.on_stop = on_stop
+        self.on_cancel = on_cancel
         self._app: Optional[Gtk.Application] = None
         self._win: Optional[Gtk.ApplicationWindow] = None
         self._icon_label: Optional[Gtk.Label] = None
@@ -93,8 +99,13 @@ class FloatingPillWindow:
         # Initialize Layer Shell
         Gtk4LayerShell.init_for_window(self._win)
         Gtk4LayerShell.set_layer(self._win, Gtk4LayerShell.Layer.OVERLAY)
-        # CRITICAL: Keyboard mode NONE ensures focus is never stolen from active window
-        Gtk4LayerShell.set_keyboard_mode(self._win, Gtk4LayerShell.KeyboardMode.NONE)
+        # EXCLUSIVE keyboard mode directly receives Enter & Escape from physical keyboard
+        Gtk4LayerShell.set_keyboard_mode(self._win, Gtk4LayerShell.KeyboardMode.EXCLUSIVE)
+
+        # Add key controller for immediate Enter and Escape handling
+        key_ctrl = Gtk.EventControllerKey()
+        key_ctrl.connect("key-pressed", self._on_key_pressed)
+        self._win.add_controller(key_ctrl)
 
         # Anchor bottom-center with 48px margin
         Gtk4LayerShell.set_anchor(self._win, Gtk4LayerShell.Edge.BOTTOM, True)
@@ -108,10 +119,9 @@ class FloatingPillWindow:
         box.add_css_class("pill-container")
         box.set_cursor_from_name("pointer")
 
-        if self.on_click:
-            click = Gtk.GestureClick()
-            click.connect("pressed", lambda gesture, n, x, y: self.on_click())
-            box.add_controller(click)
+        click = Gtk.GestureClick()
+        click.connect("pressed", lambda gesture, n, x, y: self._trigger_stop())
+        box.add_controller(click)
 
         self._icon_label = Gtk.Label(label="󰍬")
         self._icon_label.add_css_class("pill-icon")
@@ -174,3 +184,21 @@ class FloatingPillWindow:
         if self.on_close:
             self.on_close()
         return False
+
+    def _on_key_pressed(self, controller, keyval, keycode, state) -> bool:
+        name = Gdk.keyval_name(keyval)
+        if name in ("Return", "KP_Enter", "ISO_Enter"):
+            self._trigger_stop()
+            return True
+        elif name in ("Escape",):
+            self._trigger_cancel()
+            return True
+        return False
+
+    def _trigger_stop(self) -> None:
+        if self.on_stop:
+            self.on_stop()
+
+    def _trigger_cancel(self) -> None:
+        if self.on_cancel:
+            self.on_cancel()
