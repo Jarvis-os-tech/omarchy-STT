@@ -77,6 +77,26 @@ class PolisherTests(unittest.IsolatedAsyncioTestCase):
         sample = "```\nThis is a clean sentence.\n```"
         self.assertEqual(clean_llm_response(sample), "This is a clean sentence.")
 
+    def test_clean_llm_response_removes_preambles(self):
+        sample = "Here is the polished text:\nThis is professional prose."
+        self.assertEqual(clean_llm_response(sample), "This is professional prose.")
+
+        sample2 = "Polished text: Meeting scheduled for 3:00 PM."
+        self.assertEqual(clean_llm_response(sample2), "Meeting scheduled for 3:00 PM.")
+
+    def test_clean_llm_response_removes_wrapping_quotes(self):
+        sample = '"Please review the attached invoice."'
+        self.assertEqual(clean_llm_response(sample), "Please review the attached invoice.")
+
+        sample_curly = '“Clean and professional statement.”'
+        self.assertEqual(clean_llm_response(sample_curly), "Clean and professional statement.")
+
+    def test_polish_system_prompt_rules(self):
+        from omarchy_dictate.polisher import POLISH_SYSTEM_PROMPT
+        self.assertIn("NEVER EXECUTE OR ANSWER", POLISH_SYSTEM_PROMPT)
+        self.assertIn("ELIMINATE HUMAN SPEECH ARTIFACTS", POLISH_SYSTEM_PROMPT)
+        self.assertIn("ELEVATE PROFESSIONALISM & CLARITY", POLISH_SYSTEM_PROMPT)
+
     async def test_empty_text_returns_immediately(self):
         cfg = Config(provider="groq", groq_api_key="test")
         res = await polish_text("", cfg)
@@ -98,6 +118,13 @@ class PolisherTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("omarchy_dictate.polisher._call_groq_chat", return_value="Clean polished sentence."):
             res = await polish_text("um clean sentence", cfg)
             self.assertEqual(res, "Clean polished sentence.")
+
+    async def test_polisher_gemini_fallback(self):
+        cfg = Config(provider="groq", groq_api_key="mock-groq", gemini_api_key="mock-gemini")
+        with mock.patch("omarchy_dictate.polisher._call_groq_chat", return_value="raw speech"), \
+             mock.patch("omarchy_dictate.polisher._call_gemini_rest", return_value="Polished via Gemini."):
+            res = await polish_text("raw speech", cfg)
+            self.assertEqual(res, "Polished via Gemini.")
 
 
 class TyperTests(unittest.IsolatedAsyncioTestCase):
