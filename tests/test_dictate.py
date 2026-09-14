@@ -162,6 +162,27 @@ class FeedbackTests(unittest.TestCase):
         self.assertGreater(level, 0.2)
         self.assertLessEqual(level, 1.0)
 
+class LockTests(unittest.TestCase):
+    def test_single_instance_lock(self):
+        from omarchy_dictate.cli import acquire_instance_lock, release_instance_lock, is_running
+        
+        lock1 = acquire_instance_lock()
+        self.assertIsNotNone(lock1)
+        try:
+            # Second attempt while lock1 is held MUST return None
+            lock2 = acquire_instance_lock()
+            self.assertIsNone(lock2)
+            self.assertTrue(is_running())
+        finally:
+            release_instance_lock(lock1)
+            
+        # After release, lock should be free to acquire again
+        self.assertFalse(is_running())
+        lock3 = acquire_instance_lock()
+        self.assertIsNotNone(lock3)
+        release_instance_lock(lock3)
+
 
 if __name__ == "__main__":
     unittest.main()
+

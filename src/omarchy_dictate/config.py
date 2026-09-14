@@ -22,6 +22,7 @@ ENV_FILE = CONFIG_DIR / "env"
 RUNTIME_DIR = Path(f"/run/user/{os.getuid()}/omarchy-dictate")
 SOCKET_FILE = RUNTIME_DIR / "dictate.sock"
 PID_FILE = RUNTIME_DIR / "dictate.pid"
+LOCK_FILE = RUNTIME_DIR / "dictate.lock"
 
 
 @dataclass

@@ -69,6 +69,8 @@ class FloatingPillWindow:
         self._text_label: Optional[Gtk.Label] = None
         self._thread: Optional[threading.Thread] = None
         self._ready_event = threading.Event()
+        self._stopping = False
+        self._cancelled = False
 
     def start(self) -> None:
         """Start GTK application in a dedicated thread."""
@@ -142,9 +144,13 @@ class FloatingPillWindow:
 
     def update_text(self, text: str) -> None:
         """Update the live text display safely from any thread."""
+        if self._stopping or self._cancelled:
+            return
         GLib.idle_add(self._do_update_text, text)
 
     def _do_update_text(self, text: str) -> bool:
+        if self._stopping or self._cancelled:
+            return False
         if self._text_label:
             clean = text.strip()
             if clean:
@@ -157,9 +163,16 @@ class FloatingPillWindow:
 
     def set_polishing(self) -> None:
         """Transition the pill into polishing state."""
+        self._stopping = True
         GLib.idle_add(self._do_set_polishing)
 
     def _do_set_polishing(self) -> bool:
+        if self._win:
+            try:
+                # Release exclusive keyboard focus immediately so active window regains focus for typing
+                Gtk4LayerShell.set_keyboard_mode(self._win, Gtk4LayerShell.KeyboardMode.NONE)
+            except Exception:
+                pass
         if self._icon_label:
             self._icon_label.set_text("󱚟")
             self._icon_label.add_css_class("polishing")
@@ -171,6 +184,7 @@ class FloatingPillWindow:
 
     def close(self) -> None:
         """Close the floating pill window and quit GTK."""
+        self._cancelled = True
         GLib.idle_add(self._do_close)
 
     def _do_close(self) -> bool:
@@ -203,11 +217,17 @@ class FloatingPillWindow:
         return False
 
     def _trigger_stop(self) -> None:
+        if self._stopping or self._cancelled:
+            return
+        self._stopping = True
         self.set_polishing()
         if self.on_stop:
             self.on_stop()
 
     def _trigger_cancel(self) -> None:
+        if self._cancelled:
+            return
+        self._cancelled = True
         self.close()
         if self.on_cancel:
             self.on_cancel()

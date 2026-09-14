@@ -3,79 +3,129 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import os
 import socket
 import sys
+import time
+from typing import Optional
 
-from .config import SOCKET_FILE, PID_FILE, load_config
+from .config import RUNTIME_DIR, SOCKET_FILE, PID_FILE, LOCK_FILE, load_config
 from .session import DictationSession, unbind_stop_keys
 
 
-def send_command(cmd: str) -> bool:
+def acquire_instance_lock() -> Optional[int]:
+    """Acquire exclusive non-blocking lock on LOCK_FILE. Returns fd if acquired, else None."""
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except (BlockingIOError, OSError):
+        return None
+
+
+def release_instance_lock(fd: Optional[int]) -> None:
+    """Release instance lock and close fd."""
+    if fd is not None:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        except OSError:
+            pass
+        if LOCK_FILE.exists():
+            try:
+                LOCK_FILE.unlink()
+            except OSError:
+                pass
+
+
+def send_command(cmd: str, timeout: float = 1.5) -> bool:
     """Send command to running dictation session over UNIX socket."""
     if not SOCKET_FILE.exists():
         return False
 
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        sock.settimeout(2.0)
+        sock.settimeout(timeout)
         sock.connect(str(SOCKET_FILE))
         sock.sendall(f"{cmd}\n".encode("utf-8"))
         res = sock.recv(64)
         sock.close()
         return res.strip() == b"ok"
     except (socket.error, OSError):
-        try:
-            SOCKET_FILE.unlink()
-        except OSError:
-            pass
         return False
 
 
 def is_running() -> bool:
     """Check if an active dictation session is running."""
-    if not SOCKET_FILE.exists():
-        return False
-
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        sock.settimeout(0.5)
-        sock.connect(str(SOCKET_FILE))
-        sock.sendall(b"status\n")
-        res = sock.recv(64)
-        sock.close()
-        return res.strip() == b"recording"
-    except (socket.error, OSError):
-        try:
-            SOCKET_FILE.unlink()
-        except OSError:
-            pass
-        return False
+    lock_fd = acquire_instance_lock()
+    if lock_fd is None:
+        # Lock is held -> definitely running!
+        return True
+    # Lock was not held -> release immediately
+    release_instance_lock(lock_fd)
+    return False
 
 
 def cmd_toggle() -> int:
-    """Toggle dictation on or off."""
-    if SOCKET_FILE.exists():
-        if send_command("toggle"):
-            unbind_stop_keys()
-            return 0
-
-    # Ensure clean state before starting
-    unbind_stop_keys()
-
-    # Start new session
-    config = load_config()
-    session = DictationSession(config)
-    try:
-        asyncio.run(session.run())
-        return 0
-    except KeyboardInterrupt:
-        return 0
-    except Exception as e:
-        print(f"Error starting dictation: {e}", file=sys.stderr)
-        return 1
-    finally:
+    """Toggle dictation on or off with strict single-instance guarantee."""
+    lock_fd = acquire_instance_lock()
+    if lock_fd is None:
+        # An instance is already running or starting up!
+        # Tell the running instance to toggle (stop & finish)
+        deadline = time.time() + 1.5
+        while time.time() < deadline:
+            if send_command("toggle", timeout=1.0):
+                unbind_stop_keys()
+                return 0
+            time.sleep(0.05)
+        # Never spawn a duplicate session
         unbind_stop_keys()
+        return 0
+
+    # We acquired the lock -> We are the ONE AND ONLY dictation instance!
+    try:
+        unbind_stop_keys()
+        config = load_config()
+        session = DictationSession(config)
+        try:
+            asyncio.run(session.run())
+            return 0
+        except KeyboardInterrupt:
+            return 0
+        except Exception as e:
+            print(f"Error starting dictation: {e}", file=sys.stderr)
+            return 1
+        finally:
+            unbind_stop_keys()
+    finally:
+        release_instance_lock(lock_fd)
+
+
+def cmd_start() -> int:
+    """Start dictation if not already running."""
+    lock_fd = acquire_instance_lock()
+    if lock_fd is None:
+        # Already running
+        return 0
+
+    try:
+        unbind_stop_keys()
+        config = load_config()
+        session = DictationSession(config)
+        try:
+            asyncio.run(session.run())
+            return 0
+        except KeyboardInterrupt:
+            return 0
+        except Exception as e:
+            print(f"Error starting dictation: {e}", file=sys.stderr)
+            return 1
+        finally:
+            unbind_stop_keys()
+    finally:
+        release_instance_lock(lock_fd)
 
 
 def cmd_stop() -> int:
