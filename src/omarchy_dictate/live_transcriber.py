@@ -6,6 +6,7 @@ import asyncio
 import base64
 import io
 import json
+import re
 import struct
 import urllib.request
 import urllib.error
@@ -133,8 +134,9 @@ class LiveTranscriber:
                 if not text and self.config.groq_api_key:
                     text = await loop.run_in_executor(None, self._call_groq_transcribe, wav_bytes)
 
-            # Suppress silence hallucinations on low-energy clips
-            cleaned = text.strip()
+            # Suppress silence hallucinations and flatten newlines into spaces
+            cleaned = re.sub(r"[\r\n\v\f]+", " ", text).strip()
+            cleaned = re.sub(r" +", " ", cleaned)
             if energy < 15.0 and cleaned.lower() in COMMON_SILENCE_HALLUCINATIONS:
                 cleaned = ""
 
@@ -210,7 +212,8 @@ class LiveTranscriber:
 
         prompt = (
             "You are a speech-to-text engine. Transcribe the spoken audio verbatim with proper punctuation "
-            "and capitalization. Output ONLY the transcribed words and nothing else. If background noise or silence only, output nothing."
+            "and capitalization on a single continuous line. Output ONLY the transcribed words without newlines or line breaks. "
+            "If background noise or silence only, output nothing."
         )
 
         for model in models:

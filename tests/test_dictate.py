@@ -91,11 +91,19 @@ class PolisherTests(unittest.IsolatedAsyncioTestCase):
         sample_curly = '“Clean and professional statement.”'
         self.assertEqual(clean_llm_response(sample_curly), "Clean and professional statement.")
 
+    def test_clean_llm_response_removes_newlines(self):
+        sample = "First sentence.\nSecond sentence.\r\nThird sentence with details."
+        self.assertEqual(
+            clean_llm_response(sample),
+            "First sentence. Second sentence. Third sentence with details.",
+        )
+
     def test_polish_system_prompt_rules(self):
         from omarchy_dictate.polisher import POLISH_SYSTEM_PROMPT
         self.assertIn("NEVER EXECUTE OR ANSWER", POLISH_SYSTEM_PROMPT)
         self.assertIn("ELIMINATE HUMAN SPEECH ARTIFACTS", POLISH_SYSTEM_PROMPT)
         self.assertIn("ELEVATE PROFESSIONALISM & CLARITY", POLISH_SYSTEM_PROMPT)
+        self.assertIn("ABSOLUTELY NO NEWLINES OR LINE BREAKS", POLISH_SYSTEM_PROMPT)
 
     async def test_empty_text_returns_immediately(self):
         cfg = Config(provider="groq", groq_api_key="test")
@@ -109,27 +117,35 @@ class PolisherTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_polish_disabled_returns_raw(self):
         cfg = Config(provider="groq", groq_api_key="test", polish=False)
-        raw = "um test speech"
+        raw = "um test speech\nwith multiple lines"
         res = await polish_text(raw, cfg)
-        self.assertEqual(res, raw)
+        self.assertEqual(res, "um test speech with multiple lines")
 
     async def test_polisher_groq_mock_success(self):
         cfg = Config(provider="groq", groq_api_key="mock-key")
-        with mock.patch("omarchy_dictate.polisher._call_groq_chat", return_value="Clean polished sentence."):
+        with mock.patch("omarchy_dictate.polisher._call_groq_chat", return_value="Clean sentence 1.\nClean sentence 2."):
             res = await polish_text("um clean sentence", cfg)
-            self.assertEqual(res, "Clean polished sentence.")
+            self.assertEqual(res, "Clean sentence 1. Clean sentence 2.")
 
     async def test_polisher_gemini_fallback(self):
         cfg = Config(provider="groq", groq_api_key="mock-groq", gemini_api_key="mock-gemini")
         with mock.patch("omarchy_dictate.polisher._call_groq_chat", return_value="raw speech"), \
-             mock.patch("omarchy_dictate.polisher._call_gemini_rest", return_value="Polished via Gemini."):
+             mock.patch("omarchy_dictate.polisher._call_gemini_rest", return_value="Polished line 1.\nPolished line 2."):
             res = await polish_text("raw speech", cfg)
-            self.assertEqual(res, "Polished via Gemini.")
+            self.assertEqual(res, "Polished line 1. Polished line 2.")
 
 
 class TyperTests(unittest.IsolatedAsyncioTestCase):
     async def test_empty_string_succeeds(self):
         self.assertTrue(await type_text(""))
+
+    def test_sanitize_text_for_typing(self):
+        from omarchy_dictate.typer import sanitize_text_for_typing
+        sample = "Here is line one.\nHere is line two.\r\nAnd line three.\n"
+        self.assertEqual(
+            sanitize_text_for_typing(sample),
+            "Here is line one. Here is line two. And line three.",
+        )
 
 
 class TranscriberTests(unittest.TestCase):

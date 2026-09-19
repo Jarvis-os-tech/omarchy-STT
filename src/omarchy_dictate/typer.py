@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 import subprocess
 
 
+def sanitize_text_for_typing(text: str) -> str:
+    """Ensure text has no newlines or carriage returns that would trigger Enter keypresses."""
+    # Replace all newlines, carriage returns, and line breaks with spaces so wtype never emits KEY_ENTER
+    text = re.sub(r"[\r\n\v\f]+", " ", text)
+    return re.sub(r" +", " ", text).strip()
+
+
 async def type_text(text: str) -> bool:
     """Type text into the currently active focused Wayland surface, safeguarding via clipboard."""
+    text = sanitize_text_for_typing(text)
     if not text:
         return True
 

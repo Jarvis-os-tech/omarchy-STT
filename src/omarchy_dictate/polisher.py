@@ -22,15 +22,19 @@ CRITICAL RULES:
 3. ELEVATE PROFESSIONALISM & CLARITY:
    - Rephrase sloppy, casual, or rambling spoken phrasing into articulate, concise, professional written prose.
    - Fix all grammar, punctuation, sentence capitalization, numbers (e.g. "three pm" -> "3:00 PM", "fifty dollars" -> "$50"), and technical terms.
-   - Break breathless run-on sentences into crisp, cohesive sentences with natural paragraph breaks when distinct thoughts exist.
-4. PRESERVE INTENT & SUBSTANCE:
+   - Break breathless run-on sentences into crisp, cohesive sentences separated by spaces.
+4. ABSOLUTELY NO NEWLINES OR LINE BREAKS:
+   - The text is typed/pasted directly into an active chat or search input bar.
+   - NEVER output newline characters, carriage returns, paragraph breaks, or bullet lists.
+   - All sentences must flow continuously on a single line separated ONLY by spaces.
+5. PRESERVE INTENT & SUBSTANCE:
    - Strictly preserve all core details, facts, numbers, names, technical terms, and intended messaging. Do not summarize or omit substantive content.
-5. STRICT OUTPUT:
-   - Return ONLY the polished text. Never include explanations, pleasantries, preambles, or markdown quotes."""
+6. STRICT OUTPUT:
+   - Return ONLY the polished text as a single line. Never include explanations, pleasantries, preambles, or markdown quotes."""
 
 
 def clean_llm_response(text: str) -> str:
-    """Strip reasoning tokens, thinking blocks, code fences, or preambles from model responses."""
+    """Strip reasoning tokens, thinking blocks, code fences, preambles, and line breaks from model responses."""
     # Strip <think>...</think> blocks from models like Qwen or DeepSeek
     cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     cleaned = cleaned.strip()
@@ -57,12 +61,19 @@ def clean_llm_response(text: str) -> str:
     ):
         cleaned = cleaned[1:-1].strip()
 
+    # Flatten all newlines, carriage returns, and line breaks into spaces
+    # to strictly prevent wtype from simulating Enter/Return keystrokes into input bars
+    cleaned = re.sub(r"[\r\n]+", " ", cleaned)
+    cleaned = re.sub(r" +", " ", cleaned).strip()
+
     return cleaned
 
 
 async def polish_text(raw_text: str, config: Config) -> str:
     """Polish transcribed text into a clean structure, falling back to raw text on error."""
-    text = raw_text.strip()
+    # Flatten input text into a single line
+    text = re.sub(r"[\r\n]+", " ", raw_text).strip()
+    text = re.sub(r" +", " ", text)
     if not text or len(text) < 3 or not config.polish or not config.api_key:
         return text
 
@@ -81,7 +92,8 @@ async def polish_text(raw_text: str, config: Config) -> str:
                     loop.run_in_executor(None, _call_gemini_rest, text, config, timeout),
                     timeout=timeout + 0.5,
                 )
-            return res or text
+            result = res or text
+            return re.sub(r" +", " ", re.sub(r"[\r\n]+", " ", result)).strip()
         else:
             res = await asyncio.wait_for(
                 loop.run_in_executor(None, _call_gemini_rest, text, config, timeout),
@@ -92,10 +104,11 @@ async def polish_text(raw_text: str, config: Config) -> str:
                     loop.run_in_executor(None, _call_groq_chat, text, config, timeout),
                     timeout=timeout + 0.5,
                 )
-            return res or text
+            result = res or text
+            return re.sub(r" +", " ", re.sub(r"[\r\n]+", " ", result)).strip()
     except Exception:
-        # Fallback to raw text so dictation is never lost
-        return text
+        # Fallback to sanitized raw text so dictation is never lost
+        return re.sub(r" +", " ", re.sub(r"[\r\n]+", " ", text)).strip()
 
 
 def _call_groq_chat(raw_text: str, config: Config, timeout: float = 5.0) -> str:
