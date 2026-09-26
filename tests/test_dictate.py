@@ -129,7 +129,7 @@ class PolisherTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_polisher_gemini_fallback(self):
         cfg = Config(provider="groq", groq_api_key="mock-groq", gemini_api_key="mock-gemini")
-        with mock.patch("omarchy_dictate.polisher._call_groq_chat", return_value="raw speech"), \
+        with mock.patch("omarchy_dictate.polisher._call_groq_chat", return_value=""), \
              mock.patch("omarchy_dictate.polisher._call_gemini_rest", return_value="Polished line 1.\nPolished line 2."):
             res = await polish_text("raw speech", cfg)
             self.assertEqual(res, "Polished line 1. Polished line 2.")
@@ -148,7 +148,25 @@ class TyperTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
-class TranscriberTests(unittest.TestCase):
+class TranscriberTests(unittest.IsolatedAsyncioTestCase):
+    async def test_silence_hallucination_suppression(self):
+        cfg = Config(provider="groq", groq_api_key="test")
+        transcriber = LiveTranscriber(cfg)
+
+        # Mock pcm audio buffer with low energy (1600 samples of low amplitude)
+        transcriber._pcm_buffer = bytearray(b"\x02\x00" * 1600)
+
+        # Punctuation-only should be suppressed
+        with mock.patch.object(transcriber, "_call_groq_transcribe", return_value=(" .", True)):
+            text = await transcriber.stop()
+            self.assertEqual(text, "")
+
+        # Common silence hallucination with low energy should be suppressed
+        transcriber._pcm_buffer = bytearray(b"\x02\x00" * 1600)
+        with mock.patch.object(transcriber, "_call_groq_transcribe", return_value=("Thank you.", True)):
+            text = await transcriber.stop()
+            self.assertEqual(text, "")
+
     def test_pcm_to_wav_format(self):
         # 0.1s of 16kHz silence
         pcm = b"\x00\x00" * 1600

@@ -77,33 +77,40 @@ async def polish_text(raw_text: str, config: Config) -> str:
     if not text or len(text) < 3 or not config.polish or not config.api_key:
         return text
 
-    # Scale timeout with text length for long passages (e.g. 10+ sentences)
-    timeout = min(15.0, max(5.0, len(text) / 40.0))
+    # Strict fast timeout so dictation never hangs: max 3.5s
+    timeout = min(3.5, max(1.8, len(text) / 50.0))
     loop = asyncio.get_running_loop()
 
     try:
         if config.provider == "groq":
             res = await asyncio.wait_for(
                 loop.run_in_executor(None, _call_groq_chat, text, config, timeout),
-                timeout=timeout + 0.5,
+                timeout=timeout + 0.3,
             )
-            if (not res or res == text) and config.gemini_api_key:
-                res = await asyncio.wait_for(
-                    loop.run_in_executor(None, _call_gemini_rest, text, config, timeout),
-                    timeout=timeout + 0.5,
-                )
+            # Only fall back to Gemini if Groq completely failed
+            if not res and config.gemini_api_key:
+                try:
+                    res = await asyncio.wait_for(
+                        loop.run_in_executor(None, _call_gemini_rest, text, config, 2.5),
+                        timeout=2.8,
+                    )
+                except Exception:
+                    pass
             result = res or text
             return re.sub(r" +", " ", re.sub(r"[\r\n]+", " ", result)).strip()
         else:
             res = await asyncio.wait_for(
                 loop.run_in_executor(None, _call_gemini_rest, text, config, timeout),
-                timeout=timeout + 0.5,
+                timeout=timeout + 0.3,
             )
-            if (not res or res == text) and config.groq_api_key:
-                res = await asyncio.wait_for(
-                    loop.run_in_executor(None, _call_groq_chat, text, config, timeout),
-                    timeout=timeout + 0.5,
-                )
+            if not res and config.groq_api_key:
+                try:
+                    res = await asyncio.wait_for(
+                        loop.run_in_executor(None, _call_groq_chat, text, config, 2.5),
+                        timeout=2.8,
+                    )
+                except Exception:
+                    pass
             result = res or text
             return re.sub(r" +", " ", re.sub(r"[\r\n]+", " ", result)).strip()
     except Exception:
@@ -111,13 +118,13 @@ async def polish_text(raw_text: str, config: Config) -> str:
         return re.sub(r" +", " ", re.sub(r"[\r\n]+", " ", text)).strip()
 
 
-def _call_groq_chat(raw_text: str, config: Config, timeout: float = 5.0) -> str:
+def _call_groq_chat(raw_text: str, config: Config, timeout: float = 3.5) -> str:
     """Polish text using Groq's high-speed chat completion API."""
     key = config.groq_api_key or config.api_key
     if not key:
-        return raw_text
+        return ""
 
-    models = [config.polish_model, "openai/gpt-oss-20b", "qwen/qwen3.6-27b"]
+    models = [config.polish_model, "openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.8-27b"]
     seen = set()
     # Filter out models that belong to other providers (e.g. gemini-*)
     models = [
@@ -125,7 +132,9 @@ def _call_groq_chat(raw_text: str, config: Config, timeout: float = 5.0) -> str:
         if m and not m.startswith("gemini") and not (m in seen or seen.add(m))
     ]
     if not models:
-        models = ["openai/gpt-oss-20b", "qwen/qwen3.6-27b"]
+        models = ["openai/gpt-oss-20b", "openai/gpt-oss-120b"]
+
+    max_tokens = min(1024, max(128, len(raw_text) * 3))
 
     for model in models:
         payload = {
@@ -135,7 +144,7 @@ def _call_groq_chat(raw_text: str, config: Config, timeout: float = 5.0) -> str:
                 {"role": "user", "content": f"Raw speech:\n{raw_text}"},
             ],
             "temperature": 0.1,
-            "max_tokens": 4096,
+            "max_tokens": max_tokens,
         }
 
         req = urllib.request.Request(
@@ -159,16 +168,16 @@ def _call_groq_chat(raw_text: str, config: Config, timeout: float = 5.0) -> str:
         except Exception:
             continue
 
-    return raw_text
+    return ""
 
 
-def _call_gemini_rest(raw_text: str, config: Config, timeout: float = 6.0) -> str:
+def _call_gemini_rest(raw_text: str, config: Config, timeout: float = 2.5) -> str:
     """Polish text using Google Gemini generateContent."""
     key = config.gemini_api_key or config.api_key
     if not key:
-        return raw_text
+        return ""
 
-    gemini_models = [config.polish_model, "gemini-flash-latest", "gemini-3.6-flash"]
+    gemini_models = [config.polish_model, "gemini-flash-latest"]
     seen = set()
     # Filter out models that belong to other providers (e.g. openai/*, qwen/*)
     gemini_models = [
@@ -176,15 +185,16 @@ def _call_gemini_rest(raw_text: str, config: Config, timeout: float = 6.0) -> st
         if m and not ("/" in m) and not (m in seen or seen.add(m))
     ]
     if not gemini_models:
-        gemini_models = ["gemini-flash-latest", "gemini-3.6-flash"]
+        gemini_models = ["gemini-flash-latest"]
 
     prompt = f"{POLISH_SYSTEM_PROMPT}\n\nRaw speech:\n{raw_text}"
+    max_tokens = min(1024, max(128, len(raw_text) * 3))
 
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": 0.1,
-            "maxOutputTokens": 4096,
+            "maxOutputTokens": max_tokens,
         },
     }
 
@@ -213,4 +223,4 @@ def _call_gemini_rest(raw_text: str, config: Config, timeout: float = 6.0) -> st
         except Exception:
             continue
 
-    return raw_text
+    return ""

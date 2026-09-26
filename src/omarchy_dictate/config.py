@@ -23,6 +23,26 @@ RUNTIME_DIR = Path(f"/run/user/{os.getuid()}/omarchy-dictate")
 SOCKET_FILE = RUNTIME_DIR / "dictate.sock"
 PID_FILE = RUNTIME_DIR / "dictate.pid"
 LOCK_FILE = RUNTIME_DIR / "dictate.lock"
+STATE_DIR = Path.home() / ".local" / "state" / "linux-voice"
+LOG_FILE = STATE_DIR / "dictate.log"
+
+
+def setup_logging():
+    """Configure lightweight logging to ~/.local/state/linux-voice/dictate.log."""
+    import logging
+    logger = logging.getLogger("omarchy_dictate")
+    if not logger.handlers:
+        try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            logger.setLevel(logging.INFO)
+            fh = logging.FileHandler(str(LOG_FILE), encoding="utf-8")
+            fmt = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+            fh.setFormatter(fmt)
+            logger.addHandler(fh)
+        except Exception:
+            pass
+    return logger
+
 
 
 @dataclass

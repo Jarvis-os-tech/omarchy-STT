@@ -7,16 +7,19 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from typing import Optional
 
-from .config import Config, PID_FILE, SOCKET_FILE
+from .config import Config, PID_FILE, SOCKET_FILE, setup_logging
 from .feedback import Feedback
 from .live_transcriber import LiveTranscriber
 from .polisher import polish_text
 from .typer import type_text
 
-
 import atexit
+
+logger = setup_logging()
+
 
 
 def send_notification(title: str, message: str, timeout_ms: int = 3000) -> None:
@@ -108,7 +111,7 @@ def bind_stop_keys() -> None:
         pass
 
 
-def unbind_stop_keys() -> None:
+def unbind_stop_keys(blocking: bool = False) -> None:
     """Unconditionally restore Return, KP_Enter, and Escape in Hyprland."""
     cmd = (
         'local keys = { "RETURN", "code:36", "KP_ENTER", "code:104", "Return", "KP_Enter", "ESCAPE", "code:9", "Escape" }; '
@@ -119,13 +122,16 @@ def unbind_stop_keys() -> None:
         'end'
     )
     try:
-        subprocess.run(["hyprctl", "eval", cmd], capture_output=True, timeout=1.0)
+        if blocking:
+            subprocess.run(["hyprctl", "eval", cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=0.5)
+        else:
+            subprocess.Popen(["hyprctl", "eval", cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
 
 
 # Register atexit handler so Enter is guaranteed restored if the process terminates
-atexit.register(unbind_stop_keys)
+atexit.register(unbind_stop_keys, blocking=True)
 
 
 class DictationSession:
@@ -143,26 +149,27 @@ class DictationSession:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     def _handle_signal(self) -> None:
-        unbind_stop_keys()
         if self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._stop_event.set)
         else:
             self._stop_event.set()
+        unbind_stop_keys()
 
     def _handle_cancel_from_ui(self) -> None:
         self._cancelled = True
-        unbind_stop_keys()
         if self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._stop_event.set)
         else:
             self._stop_event.set()
+        unbind_stop_keys()
 
     def _handle_stop_from_ui(self) -> None:
-        unbind_stop_keys()
         if self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._stop_event.set)
         else:
             self._stop_event.set()
+        unbind_stop_keys()
+
 
     async def run(self) -> None:
         """Run the dictation session until stopped via Enter or Super+H."""
@@ -176,6 +183,7 @@ class DictationSession:
         self._muted_agent = mute_voice_agent()
 
         try:
+            logger.info("Starting dictation session (PID %d, provider=%s)", os.getpid(), self.config.provider)
             # 1. Write PID file
             PID_FILE.parent.mkdir(parents=True, exist_ok=True)
             PID_FILE.write_text(str(os.getpid()))
@@ -223,14 +231,15 @@ class DictationSession:
             unbind_stop_keys()
             play_sound("audio-volume-change")
 
-            # 9. Update visual pill to polishing state if finishing
+            # 9. Update visual pill to transcribing state
             if self.pill and not self._cancelled:
-                self.pill.set_polishing()
+                self.pill.set_transcribing()
 
             # 10. Stop dictation, polish, and type text into the active text bar
             if not self._cancelled:
                 await self._finish()
             else:
+                logger.info("Dictation cancelled by user")
                 if self.pill:
                     try:
                         self.pill.close()
@@ -244,6 +253,7 @@ class DictationSession:
                         pass
 
         except Exception as e:
+            logger.error("Dictation error: %s", e, exc_info=True)
             sys.stderr.write(f"Dictation error: {e}\n")
             raise
         finally:
@@ -268,34 +278,66 @@ class DictationSession:
 
     async def _finish(self) -> None:
         """Collect transcript, polish text, and type directly into the focused text bar."""
-        raw_transcript = ""
-        if self.transcriber:
-            raw_transcript = await self.transcriber.stop()
+        t_finish_start = time.perf_counter()
+        try:
+            if self.pill and not self._cancelled:
+                self.pill.set_transcribing()
 
-        # Polish text via Gemini/Groq (fixes grammar, punctuation, preserves 10+ sentences)
-        polished_text = raw_transcript
-        if raw_transcript.strip():
-            polished_text = await polish_text(raw_transcript, self.config)
+            t0 = time.perf_counter()
+            raw_transcript = ""
+            if self.transcriber:
+                raw_transcript = await self.transcriber.stop()
+            t_transcribe = time.perf_counter() - t0
+            logger.info("Transcription completed in %.2fs (length=%d): %r", t_transcribe, len(raw_transcript), raw_transcript)
 
-        # Close visual pill BEFORE typing so window focus is 100% active on the text bar!
-        if self.pill:
-            try:
-                self.pill.close()
-            except Exception:
-                pass
-            self.pill = None
+            # Polish text via Gemini/Groq (fixes grammar, punctuation, preserves 10+ sentences)
+            polished_text = raw_transcript
+            if raw_transcript.strip():
+                if self.pill and not self._cancelled:
+                    self.pill.set_polishing()
+                t1 = time.perf_counter()
+                try:
+                    polished_text = await asyncio.wait_for(
+                        polish_text(raw_transcript, self.config),
+                        timeout=4.0,
+                    )
+                except Exception as e:
+                    logger.warning("Polishing failed or timed out (%s), using raw transcript", e)
+                    polished_text = raw_transcript
+                t_polish = time.perf_counter() - t1
+                logger.info("Polishing completed in %.2fs (length=%d): %r", t_polish, len(polished_text), polished_text)
 
-        # Give Hyprland 150ms to ensure the window has full keyboard focus
-        await asyncio.sleep(0.15)
+            # Close visual pill BEFORE typing so window focus is 100% active on the text bar!
+            if self.pill:
+                try:
+                    self.pill.close()
+                except Exception:
+                    pass
+                self.pill = None
 
-        # Type directly into the active focused window / text bar
-        if polished_text.strip():
-            await type_text(polished_text)
+            # Give Hyprland 100ms to ensure the window has full keyboard focus
+            await asyncio.sleep(0.10)
 
-        # Unmute voice agent as soon as typing completes
-        if self._muted_agent:
-            unmute_voice_agent()
-            self._muted_agent = False
+            # Type directly into the active focused window / text bar
+            if polished_text.strip():
+                t2 = time.perf_counter()
+                await type_text(polished_text)
+                t_type = time.perf_counter() - t2
+                logger.info("Typing completed in %.2fs", t_type)
+
+            logger.info("Dictation pipeline finished in %.2fs", time.perf_counter() - t_finish_start)
+
+        finally:
+            if self.pill:
+                try:
+                    self.pill.close()
+                except Exception:
+                    pass
+                self.pill = None
+            if self._muted_agent:
+                unmute_voice_agent()
+                self._muted_agent = False
+
 
     async def _start_socket_server(self) -> None:
         if SOCKET_FILE.exists():

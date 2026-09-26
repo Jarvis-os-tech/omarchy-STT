@@ -19,13 +19,17 @@ from .config import Config
 from .feedback import Feedback, frame_level
 
 COMMON_SILENCE_HALLUCINATIONS = {
-    "thank you.",
     "thank you",
-    "thanks for watching.",
     "thanks for watching",
+    "thank you for watching",
     "you",
-    "bye.",
+    "bye",
     "subtitles by",
+    "please subscribe",
+    "subscribe",
+    "watching",
+    "amara org",
+    "thank you very much",
 }
 
 
@@ -126,18 +130,26 @@ class LiveTranscriber:
         text = ""
         try:
             if self.config.provider == "groq":
-                text = await loop.run_in_executor(None, self._call_groq_transcribe, wav_bytes)
-                if not text and self.config.gemini_api_key:
+                text, groq_ok = await loop.run_in_executor(None, self._call_groq_transcribe, wav_bytes)
+                # Only fall back to Gemini if Groq had an actual network/API failure
+                if not groq_ok and self.config.gemini_api_key:
                     text = await loop.run_in_executor(None, self._call_gemini_transcribe, wav_bytes)
             else:
                 text = await loop.run_in_executor(None, self._call_gemini_transcribe, wav_bytes)
                 if not text and self.config.groq_api_key:
-                    text = await loop.run_in_executor(None, self._call_groq_transcribe, wav_bytes)
+                    text, _ = await loop.run_in_executor(None, self._call_groq_transcribe, wav_bytes)
 
             # Suppress silence hallucinations and flatten newlines into spaces
             cleaned = re.sub(r"[\r\n\v\f]+", " ", text).strip()
             cleaned = re.sub(r" +", " ", cleaned)
-            if energy < 15.0 and cleaned.lower() in COMMON_SILENCE_HALLUCINATIONS:
+
+            # If there are no word characters (e.g. only punctuation like '.' or '...'), suppress
+            if not re.search(r"\w", cleaned):
+                cleaned = ""
+
+            # Check normalized speech against common silence hallucinations
+            norm = re.sub(r"[^\w\s]", "", cleaned).strip().lower()
+            if energy < 15.0 and (norm in COMMON_SILENCE_HALLUCINATIONS or not norm):
                 cleaned = ""
 
             self.finalized_text = cleaned
@@ -147,15 +159,20 @@ class LiveTranscriber:
         except Exception:
             return ""
 
-    def _call_groq_transcribe(self, wav_bytes: bytes) -> str:
-        """Call Groq Whisper audio transcriptions API."""
+    def _call_groq_transcribe(self, wav_bytes: bytes) -> tuple[str, bool]:
+        """Call Groq Whisper audio transcriptions API. Returns (text, success)."""
         key = self.config.groq_api_key or self.config.api_key
         if not key:
-            return ""
+            return "", False
 
         models = [self.config.live_model, "whisper-large-v3-turbo", "whisper-large-v3"]
         seen = set()
-        models = [m for m in models if m and not (m in seen or seen.add(m))]
+        models = [
+            m for m in models
+            if m and not m.startswith("gemini") and not (m in seen or seen.add(m))
+        ]
+        if not models:
+            models = ["whisper-large-v3-turbo", "whisper-large-v3"]
 
         for model in models:
             boundary = f"----WebKitFormBoundary{uuid.uuid4().hex}"
@@ -189,15 +206,18 @@ class LiveTranscriber:
                 },
             )
             try:
-                with urllib.request.urlopen(req, timeout=12) as resp:
+                with urllib.request.urlopen(req, timeout=6.0) as resp:
                     res = json.loads(resp.read().decode("utf-8"))
                     text = res.get("text", "").strip()
-                    if text:
-                        return text
+                    return text, True
+            except urllib.error.HTTPError as e:
+                if e.code in (400, 429):
+                    continue
+                continue
             except Exception:
                 continue
 
-        return ""
+        return "", False
 
     def _call_gemini_transcribe(self, wav_bytes: bytes) -> str:
         """Call Google Gemini generateContent with inline audio."""
@@ -208,7 +228,12 @@ class LiveTranscriber:
         b64 = base64.b64encode(wav_bytes).decode("ascii")
         models = [self.config.live_model, "gemini-flash-latest", "gemini-3.5-transcribe", "gemini-3.6-flash"]
         seen = set()
-        models = [m for m in models if m and not (m in seen or seen.add(m))]
+        models = [
+            m for m in models
+            if m and not ("whisper" in m) and not (m in seen or seen.add(m))
+        ]
+        if not models:
+            models = ["gemini-flash-latest", "gemini-3.5-transcribe", "gemini-3.6-flash"]
 
         prompt = (
             "You are a speech-to-text engine. Transcribe the spoken audio verbatim with proper punctuation "
@@ -239,7 +264,7 @@ class LiveTranscriber:
                 },
             )
             try:
-                with urllib.request.urlopen(req, timeout=12) as resp:
+                with urllib.request.urlopen(req, timeout=5.0) as resp:
                     res = json.loads(resp.read().decode("utf-8"))
                     candidates = res.get("candidates", [])
                     if candidates:

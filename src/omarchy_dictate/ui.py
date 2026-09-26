@@ -34,6 +34,10 @@ window.dictate-pill {
     margin-right: 12px;
 }
 
+.pill-icon.transcribing {
+    color: #eab308; /* yellow for transcribing */
+}
+
 .pill-icon.polishing {
     color: #38bdf8; /* cyan for polishing */
 }
@@ -98,24 +102,23 @@ class FloatingPillWindow:
         self._win = Gtk.ApplicationWindow(application=app)
         self._win.add_css_class("dictate-pill")
 
-        # Initialize Layer Shell
-        Gtk4LayerShell.init_for_window(self._win)
-        Gtk4LayerShell.set_layer(self._win, Gtk4LayerShell.Layer.OVERLAY)
-        # EXCLUSIVE keyboard mode directly receives Enter & Escape from physical keyboard
-        Gtk4LayerShell.set_keyboard_mode(self._win, Gtk4LayerShell.KeyboardMode.EXCLUSIVE)
-
+        # Initialize Layer Shell if supported
+        if Gtk4LayerShell.is_supported():
+            Gtk4LayerShell.init_for_window(self._win)
+            Gtk4LayerShell.set_layer(self._win, Gtk4LayerShell.Layer.OVERLAY)
+            # EXCLUSIVE keyboard mode directly receives Enter & Escape from physical keyboard
+            Gtk4LayerShell.set_keyboard_mode(self._win, Gtk4LayerShell.KeyboardMode.EXCLUSIVE)
+            # Anchor bottom-center with 48px margin
+            Gtk4LayerShell.set_anchor(self._win, Gtk4LayerShell.Edge.BOTTOM, True)
+            Gtk4LayerShell.set_margin(self._win, Gtk4LayerShell.Edge.BOTTOM, 48)
+            Gtk4LayerShell.set_anchor(self._win, Gtk4LayerShell.Edge.LEFT, False)
+            Gtk4LayerShell.set_anchor(self._win, Gtk4LayerShell.Edge.RIGHT, False)
+            Gtk4LayerShell.set_anchor(self._win, Gtk4LayerShell.Edge.TOP, False)
         # Add key controller for immediate Enter and Escape handling
         key_ctrl = Gtk.EventControllerKey()
         key_ctrl.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         key_ctrl.connect("key-pressed", self._on_key_pressed)
         self._win.add_controller(key_ctrl)
-
-        # Anchor bottom-center with 48px margin
-        Gtk4LayerShell.set_anchor(self._win, Gtk4LayerShell.Edge.BOTTOM, True)
-        Gtk4LayerShell.set_margin(self._win, Gtk4LayerShell.Edge.BOTTOM, 48)
-        Gtk4LayerShell.set_anchor(self._win, Gtk4LayerShell.Edge.LEFT, False)
-        Gtk4LayerShell.set_anchor(self._win, Gtk4LayerShell.Edge.RIGHT, False)
-        Gtk4LayerShell.set_anchor(self._win, Gtk4LayerShell.Edge.TOP, False)
 
         # Container box
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
@@ -161,13 +164,35 @@ class FloatingPillWindow:
                 self._text_label.set_text("Listening... (Enter to finish, Esc to cancel)")
         return False
 
+    def set_transcribing(self) -> None:
+        """Transition the pill into transcribing state."""
+        self._stopping = True
+        GLib.idle_add(self._do_set_transcribing)
+
+    def _do_set_transcribing(self) -> bool:
+        if self._win and Gtk4LayerShell.is_supported():
+            try:
+                # Release exclusive keyboard focus immediately so active window regains focus
+                Gtk4LayerShell.set_keyboard_mode(self._win, Gtk4LayerShell.KeyboardMode.NONE)
+            except Exception:
+                pass
+        if self._icon_label:
+            self._icon_label.set_text("󰍬")
+            self._icon_label.remove_css_class("polishing")
+            self._icon_label.add_css_class("transcribing")
+        if self._text_label:
+            self._text_label.remove_css_class("muted")
+            self._text_label.set_lines(1)
+            self._text_label.set_text("Transcribing speech...")
+        return False
+
     def set_polishing(self) -> None:
         """Transition the pill into polishing state."""
         self._stopping = True
         GLib.idle_add(self._do_set_polishing)
 
     def _do_set_polishing(self) -> bool:
-        if self._win:
+        if self._win and Gtk4LayerShell.is_supported():
             try:
                 # Release exclusive keyboard focus immediately so active window regains focus for typing
                 Gtk4LayerShell.set_keyboard_mode(self._win, Gtk4LayerShell.KeyboardMode.NONE)
@@ -175,17 +200,20 @@ class FloatingPillWindow:
                 pass
         if self._icon_label:
             self._icon_label.set_text("󱚟")
+            self._icon_label.remove_css_class("transcribing")
             self._icon_label.add_css_class("polishing")
         if self._text_label:
             self._text_label.remove_css_class("muted")
             self._text_label.set_lines(1)
-            self._text_label.set_text("Polishing transcript...")
+            self._text_label.set_text("Polishing text...")
         return False
 
     def close(self) -> None:
         """Close the floating pill window and quit GTK."""
         self._cancelled = True
         GLib.idle_add(self._do_close)
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=0.3)
 
     def _do_close(self) -> bool:
         if self._win:
@@ -220,7 +248,7 @@ class FloatingPillWindow:
         if self._stopping or self._cancelled:
             return
         self._stopping = True
-        self.set_polishing()
+        self.set_transcribing()
         if self.on_stop:
             self.on_stop()
 
