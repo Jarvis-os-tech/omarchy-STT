@@ -49,6 +49,25 @@ for dep in pw-record wtype wl-copy notify-send python3; do
   fi
 done
 
+# 8. Setup Hyprland keybinding if missing
+HYPR_BINDINGS="$HOME/.config/hypr/bindings.lua"
+if [ -f "$HYPR_BINDINGS" ]; then
+  if ! grep -q "linux-voice" "$HYPR_BINDINGS"; then
+    echo ""
+    echo "Adding voice dictation keybindings to $HYPR_BINDINGS..."
+    cat << 'EOF' >> "$HYPR_BINDINGS"
+
+-- linux-voice / omarchy-dictate voice dictation
+if o.cmd_present("linux-voice") or o.cmd_present("omarchy-dictate") then
+  o.bind("SUPER + H", "Voice dictation", "linux-voice toggle")
+end
+EOF
+    if command -v hyprctl >/dev/null 2>&1; then
+      hyprctl reload >/dev/null 2>&1 || true
+    fi
+  fi
+fi
+
 echo ""
 echo "Installation complete!"
 echo "Binaries: $BIN_DIR/linux-voice, $BIN_DIR/omarchy-dictate"

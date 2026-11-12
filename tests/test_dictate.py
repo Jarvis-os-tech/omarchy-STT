@@ -14,6 +14,18 @@ from unittest import mock
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+try:
+    import gi
+except ImportError:
+    gi_mock = mock.MagicMock()
+    sys.modules["gi"] = gi_mock
+    sys.modules["gi.repository"] = mock.MagicMock()
+    sys.modules["gi.repository.Gtk"] = mock.MagicMock()
+    sys.modules["gi.repository.Gdk"] = mock.MagicMock()
+    sys.modules["gi.repository.Gtk4LayerShell"] = mock.MagicMock()
+    sys.modules["gi.repository.GLib"] = mock.MagicMock()
+    sys.modules["gi.repository.Pango"] = mock.MagicMock()
+
 from omarchy_dictate.config import Config, load_config
 from omarchy_dictate.live_transcriber import (
     LiveTranscriber,
@@ -242,6 +254,66 @@ class LockTests(unittest.TestCase):
         lock3 = acquire_instance_lock()
         self.assertIsNotNone(lock3)
         release_instance_lock(lock3)
+
+
+
+class UITests(unittest.TestCase):
+    def test_close_from_current_thread_does_not_join_self(self):
+        import threading
+        from omarchy_dictate.ui import FloatingPillWindow
+
+        pill = FloatingPillWindow()
+        # Simulate that _thread is current_thread
+        current = threading.current_thread()
+        pill._thread = current
+
+        with mock.patch("omarchy_dictate.ui.GLib.idle_add") as mock_idle:
+            try:
+                pill.close()
+            except RuntimeError as e:
+                self.fail(f"pill.close() raised RuntimeError when called from own thread: {e}")
+            self.assertTrue(pill._cancelled)
+            mock_idle.assert_called_once_with(pill._do_close)
+
+
+class SessionDebounceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_toggle_debounced_within_threshold(self):
+        from omarchy_dictate.session import DictationSession
+        import time
+
+        cfg = Config(provider="groq", groq_api_key="dummy")
+        session = DictationSession(cfg)
+        session._start_time = time.monotonic()  # Just started
+
+        reader = mock.AsyncMock()
+        reader.read.return_value = b"toggle\n"
+        writer = mock.MagicMock()
+        writer.drain = mock.AsyncMock()
+        writer.wait_closed = mock.AsyncMock()
+
+        await session._handle_client(reader, writer)
+        # _stop_event should NOT be set because elapsed < 0.8s
+        self.assertFalse(session._stop_event.is_set())
+        writer.write.assert_called_with(b"ok\n")
+
+    async def test_toggle_accepted_after_threshold(self):
+        from omarchy_dictate.session import DictationSession
+        import time
+
+        cfg = Config(provider="groq", groq_api_key="dummy")
+        session = DictationSession(cfg)
+        session._start_time = time.monotonic() - 1.5  # Started 1.5s ago
+
+        reader = mock.AsyncMock()
+        reader.read.return_value = b"toggle\n"
+        writer = mock.MagicMock()
+        writer.drain = mock.AsyncMock()
+        writer.wait_closed = mock.AsyncMock()
+
+        await session._handle_client(reader, writer)
+        # _stop_event should be set because elapsed >= 0.8s
+        self.assertTrue(session._stop_event.is_set())
+        writer.write.assert_called_with(b"ok\n")
 
 
 if __name__ == "__main__":

@@ -147,6 +147,7 @@ class DictationSession:
         self._stop_event = asyncio.Event()
         self._cancelled = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._start_time = time.monotonic()
 
     def _handle_signal(self) -> None:
         if self._loop and self._loop.is_running():
@@ -174,6 +175,7 @@ class DictationSession:
     async def run(self) -> None:
         """Run the dictation session until stopped via Enter or Super+H."""
         self._loop = asyncio.get_running_loop()
+        self._start_time = time.monotonic()
 
         # Always clean any leftover stop binds before doing anything
         unbind_stop_keys()
@@ -363,9 +365,17 @@ class DictationSession:
                 self._cancelled = True
                 self._stop_event.set()
                 writer.write(b"ok\n")
-            elif cmd in ("stop", "toggle"):
+            elif cmd == "stop":
                 self._stop_event.set()
                 writer.write(b"ok\n")
+            elif cmd == "toggle":
+                elapsed = time.monotonic() - self._start_time
+                if elapsed < 0.8:
+                    logger.info("Ignoring toggle command received only %.2fs after start (debounce)", elapsed)
+                    writer.write(b"ok\n")
+                else:
+                    self._stop_event.set()
+                    writer.write(b"ok\n")
             elif cmd == "status":
                 writer.write(b"recording\n")
             else:

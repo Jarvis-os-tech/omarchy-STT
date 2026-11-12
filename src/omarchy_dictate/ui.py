@@ -212,7 +212,11 @@ class FloatingPillWindow:
         """Close the floating pill window and quit GTK."""
         self._cancelled = True
         GLib.idle_add(self._do_close)
-        if self._thread and self._thread.is_alive():
+        if (
+            self._thread
+            and self._thread.is_alive()
+            and threading.current_thread() != self._thread
+        ):
             self._thread.join(timeout=0.3)
 
     def _do_close(self) -> bool:
